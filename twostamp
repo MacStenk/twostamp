@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# twostamp: prove that files existed unchanged at a point in time, with two independent timestamps:
+#   RFC 3161 (freetsa.org) and OpenTimestamps (Bitcoin). Only hashes leave your machine, never content.
+#
+# Usage: twostamp stamp <file…>    write SHA256SUMS[-time].txt in the current directory, plus .tsr and .ots
+#        twostamp verify [dir]     check hashes and both timestamps of every SHA256SUMS*.txt
+#        twostamp upgrade [dir]    pull the Bitcoin confirmation into the .ots files (a few hours after stamping)
+#        twostamp version
+# German aliases: stempeln, pruefen.
+# Needs: shasum or sha256sum, openssl, curl. For Bitcoin also `ots` (pip install opentimestamps-client).
+set -u
+VERSION=0.1.0
+TSA_URL="${TWOSTAMP_TSA_URL:-https://freetsa.org/tsr}"
+TSA_CA_URL="${TWOSTAMP_TSA_CA_URL:-https://freetsa.org/files/cacert.pem}"
+TSA_CRT_URL="${TWOSTAMP_TSA_CRT_URL:-https://freetsa.org/files/tsa.crt}"
+
+if command -v shasum >/dev/null; then sha() { shasum -a 256 "$@"; }; else sha() { sha256sum "$@"; }; fi
+
+certs() {
+  [ -s freetsa-cacert.pem ] || curl -fsS -o freetsa-cacert.pem "$TSA_CA_URL"
+  [ -s freetsa-tsa.crt ] || curl -fsS -o freetsa-tsa.crt "$TSA_CRT_URL"
+}
+tsa_ok() { openssl ts -verify -in "$2" -data "$1" -CAfile freetsa-cacert.pem -untrusted freetsa-tsa.crt >/dev/null 2>&1; }
+tsa_time() { openssl ts -reply -in "$1" -text 2>/dev/null | sed -n 's/^Time stamp: //p'; }
+# the stamp of list.txt is list.txt.tsr (older layouts: list.tsr)
+tsr_for() { for t in "$1.tsr" "${1%.txt}.tsr"; do [ -e "$t" ] && { echo "$t"; return; }; done; }
+
+stamp() {
+  [ $# -gt 0 ] || { echo "usage: twostamp stamp <file…>" >&2; exit 2; }
+  list=SHA256SUMS.txt; [ -e "$list" ] && list="SHA256SUMS-$(date -u +%Y%m%d-%H%M%S).txt"
+  sha "$@" > "$list" || exit 1
+  echo "$(wc -l < "$list" | tr -d ' ') files -> $list"
+  certs
+  if openssl ts -query -data "$list" -sha256 -cert 2>/dev/null \
+     | curl -fsS -H 'Content-Type: application/timestamp-query' --data-binary @- "$TSA_URL" -o "$list.tsr" \
+     && tsa_ok "$list" "$list.tsr"; then
+    echo "RFC 3161: $list.tsr ($(tsa_time "$list.tsr"))"
+  else rm -f "$list.tsr"; echo "RFC 3161: timestamp authority not reachable"; fi
+  if command -v ots >/dev/null; then
+    ots stamp "$list" >/dev/null 2>&1 \
+      && echo "OpenTimestamps: $list.ots (Bitcoin confirmation follows, then: twostamp upgrade)" \
+      || echo "OpenTimestamps: calendars not reachable"
+  else echo "OpenTimestamps: skipped, ots not installed"; fi
+}
+
+verify() {
+  cd "${1:-.}" || exit 2; failed=0; found=0
+  for list in SHA256SUMS*.txt; do
+    [ -e "$list" ] || continue; found=1
+    echo "== $list"
+    # paths are relative to where stamping happened: here or one level up
+    base=.; first=$(head -1 "$list" | cut -c67-); [ -e "$first" ] || { [ -e "../$first" ] && base=..; }
+    if (cd "$base" && sha -c --quiet "$OLDPWD/$list" 2>/dev/null); then
+      echo "  hashes:   OK ($(wc -l < "$list" | tr -d ' ') files)"
+    else echo "  hashes:   MISMATCH"; failed=1; fi
+    tsr=$(tsr_for "$list")
+    if [ -n "$tsr" ]; then
+      if [ -s freetsa-cacert.pem ] || certs; then
+        tsa_ok "$list" "$tsr" && echo "  RFC 3161: OK, $(tsa_time "$tsr")" || { echo "  RFC 3161: INVALID"; failed=1; }
+      fi
+    else echo "  RFC 3161: missing"; fi
+    if [ -e "$list.ots" ] && command -v ots >/dev/null; then
+      r=$(ots verify "$list.ots" 2>&1)
+      case "$r" in
+        *"Success!"*) echo "  Bitcoin:  OK, $(grep -o 'Bitcoin block [0-9]* attests existence as of .*' <<<"$r" | head -1)";;
+        *Pending*|*"not complete"*) echo "  Bitcoin:  pending (run: twostamp upgrade)";;
+        *) echo "  Bitcoin:  $(tail -1 <<<"$r")"; failed=1;;
+      esac
+    elif [ -e "$list.ots" ]; then echo "  Bitcoin:  not checked, ots not installed"; fi
+  done
+  [ $found = 1 ] || { echo "no SHA256SUMS*.txt in $(pwd)" >&2; exit 2; }
+  exit $failed
+}
+
+upgrade() {
+  cd "${1:-.}" || exit 2
+  command -v ots >/dev/null || { echo "ots not installed: pip install opentimestamps-client" >&2; exit 2; }
+  for f in *.ots; do [ -e "$f" ] || continue
+    ots upgrade "$f" >/dev/null 2>&1 && echo "$f: confirmed" || echo "$f: still pending"; done
+}
+
+case "${1:-}" in
+  stamp|stempeln) shift; stamp "$@";;
+  verify|pruefen) shift; verify "$@";;
+  upgrade) shift; upgrade "$@";;
+  version|--version) echo "twostamp $VERSION";;
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+esac

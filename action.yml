@@ -1,0 +1,30 @@
+name: twostamp
+description: Timestamp files with two independent proofs, RFC 3161 and OpenTimestamps (Bitcoin). Only hashes are sent.
+branding:
+  icon: clock
+  color: gray-dark
+inputs:
+  files:
+    description: Files to stamp (shell glob, space separated)
+    required: true
+  working-directory:
+    description: Directory in which SHA256SUMS.txt and the proofs are written
+    required: false
+    default: .
+  bitcoin:
+    description: Also stamp with OpenTimestamps (installs opentimestamps-client)
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - if: inputs.bitcoin == 'true'
+      shell: bash
+      run: python3 -m pip install --quiet opentimestamps-client
+    - shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        shopt -s nullglob
+        files=(${{ inputs.files }})
+        [ ${#files[@]} -gt 0 ] || { echo "no files match: ${{ inputs.files }}"; exit 1; }
+        "${{ github.action_path }}/twostamp" stamp "${files[@]}"
