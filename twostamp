@@ -5,11 +5,13 @@
 # Usage: twostamp stamp <file…>    write SHA256SUMS[-time].txt in the current directory, plus .tsr and .ots
 #        twostamp verify [dir]     check hashes and both timestamps of every SHA256SUMS*.txt
 #        twostamp upgrade [dir]    pull the Bitcoin confirmation into the .ots files (a few hours after stamping)
+#        twostamp url <url…>       fetch pages (body, headers, server IP) into capture-<host>-<time>/ and stamp them,
+#                                  e.g. your robots.txt, to prove an AI-training opt-out was in place on that day
 #        twostamp version
-# German aliases: stempeln, pruefen.
+# German aliases: stempeln, pruefen, seite.
 # Needs: shasum or sha256sum, openssl, curl. For Bitcoin also `ots` (pip install opentimestamps-client).
 set -u
-VERSION=0.1.0
+VERSION=0.2.0
 TSA_URL="${TWOSTAMP_TSA_URL:-https://freetsa.org/tsr}"
 TSA_CA_URL="${TWOSTAMP_TSA_CA_URL:-https://freetsa.org/files/cacert.pem}"
 TSA_CRT_URL="${TWOSTAMP_TSA_CRT_URL:-https://freetsa.org/files/tsa.crt}"
@@ -72,6 +74,22 @@ verify() {
   exit $failed
 }
 
+capture() {
+  [ $# -gt 0 ] || { echo "usage: twostamp url <url…>" >&2; exit 2; }
+  host=$(sed -E 's#^[a-z]+://([^/:]+).*#\1#' <<<"$1")
+  dir="capture-$host-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$dir" && cd "$dir" || exit 1
+  files=()
+  for u in "$@"; do
+    n=$(sed -E 's#^[a-z]+://##; s#[^A-Za-z0-9._-]+#_#g' <<<"$u")
+    curl -sS -L --max-time 30 -A "twostamp/$VERSION" -D "$n.headers.txt" -o "$n.body" \
+      -w "url: %{url_effective}\nhttp: %{http_code}\nserver_ip: %{remote_ip}\ntls_verify: %{ssl_verify_result}\nfetched_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)\n" \
+      "$u" > "$n.meta.txt" || { echo "fetch failed: $u" >&2; exit 1; }
+    echo "$u -> $dir/$n.body ($(sed -n 's/^http: //p' "$n.meta.txt"))"
+    files+=("$n.body" "$n.headers.txt" "$n.meta.txt")
+  done
+  stamp "${files[@]}"
+}
+
 upgrade() {
   cd "${1:-.}" || exit 2
   command -v ots >/dev/null || { echo "ots not installed: pip install opentimestamps-client" >&2; exit 2; }
@@ -83,6 +101,7 @@ case "${1:-}" in
   stamp|stempeln) shift; stamp "$@";;
   verify|pruefen) shift; verify "$@";;
   upgrade) shift; upgrade "$@";;
+  url|seite) shift; capture "$@";;
   version|--version) echo "twostamp $VERSION";;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
 esac

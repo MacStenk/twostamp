@@ -63,6 +63,39 @@ openssl ts -verify -in SHA256SUMS.txt.tsr -data SHA256SUMS.txt -CAfile freetsa-c
 ots verify SHA256SUMS.txt.ots
 ```
 
+## Prove your AI-training opt-out
+
+Under EU law, an opt-out from text and data mining has to be machine-readable, for example in your `robots.txt`, and in a dispute *you* have to show it was in place when the crawler came (Hamburg Higher Regional Court, Kneschke v. LAION, December 2025). `twostamp url` captures the page with its server response and stamps it:
+
+```
+$ twostamp url https://example.com/robots.txt
+https://example.com/robots.txt -> capture-example.com-20261031T001425Z/example.com_robots.txt.body (200)
+```
+
+Run it every day and you get an unbroken chain of dated proofs. With GitHub Actions, in your own repository:
+
+```yaml
+name: robots-proof
+on:
+  schedule: [{ cron: "17 3 * * *" }]
+  workflow_dispatch:
+permissions: { contents: write }
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --quiet opentimestamps-client
+      - run: |
+          curl -fsSLO https://raw.githubusercontent.com/MacStenk/twostamp/main/twostamp && chmod +x twostamp
+          mkdir -p proofs && cd proofs && ../twostamp url https://example.com/robots.txt
+      - run: |
+          git config user.name "twostamp" && git config user.email "twostamp@users.noreply.github.com"
+          git add proofs && git commit -m "robots.txt proof $(date -u +%F)" && git push
+```
+
+Run `twostamp upgrade proofs/<capture-folder>` later (or in a second scheduled job) to complete the Bitcoin proofs.
+
 ## GitHub Action
 
 Stamp your release files on every release:
@@ -92,6 +125,7 @@ It proves that exactly these bytes existed no later than the stamped time. It do
 twostamp stempeln <dateien…>   # stempeln
 twostamp pruefen [ordner]      # prüfen
 twostamp upgrade [ordner]      # Bitcoin-Bestätigung nachholen
+twostamp seite <url>           # Seite samt Server-Antwort sichern und stempeln, z. B. die robots.txt als Beleg für den KI-Opt-out
 ```
 
 Gedacht für Beweissicherung aus dem Netz, Urheberschafts-Nachweise für Ideen und Texte, Release-Dateien, Verträge und Löschprotokolle.

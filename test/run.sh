@@ -15,4 +15,7 @@ echo hello > a.txt; echo world > b.txt
 echo tampered >> a.txt
 "$bin" verify >/dev/null && fail "tampering not detected"
 
+cd "$t" && "$bin" url https://example.com/ | grep -q "200" || fail "url capture"
+d=$(ls -d capture-example.com-*) && "$bin" verify "$d" >/dev/null || fail "verify capture"
+
 echo "OK"
